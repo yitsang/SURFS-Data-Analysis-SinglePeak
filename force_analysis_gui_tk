@@ -1,0 +1,464 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Apr  4 12:59:01 2023
+This Code is based on Te-wei Tsai's code on python 2 environment
+Only transfer the code from python 2 to 3 for easier use
+No more modifications in this code version
+@author: Yi Zeng
+"""
+
+from tkinter import *
+from tkinter import filedialog as tkFileDialog
+import tkinter
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+import numpy as np
+import os
+import function_MRI as MRI
+
+class data:
+    def __init__(self, x, y, y_cut):
+        self.x = x
+        self.y = y
+        self.y_cut = y_cut
+
+def open_snr_file(nn):
+    global snr_height, label_x, label_y, title
+    returned_values['filename'] = tkFileDialog.askopenfilename()
+    filepath = returned_values.get('filename')
+
+    temp_ref, snr_height, filename = MRI.signal_noise_ratio(filepath, nn)
+
+    # Show the information of square wave
+    info.insert(END, 'Load the square wave data: ' + filename + '\n')
+    info.insert(END, str(snr_height) + ' A means 100 pT \n')
+    info.update_idletasks()
+
+    # Show the square wave
+    label_x = 'Floating point'
+    label_y = 'Current (A)'
+    title = 'Square wave'
+    refreshFigure(np.arange(nn), temp_ref, label_x, label_y, title)
+
+def open_base_file():
+    global temp_x0, temp_y0, label_x, label_y, title, filepath
+    returned_values['filename'] = tkFileDialog.askopenfilename()
+    filepath = returned_values.get('filename')
+    temp_x0, temp_y0, filename = MRI.load_file(filepath)
+
+    # Show the information of baseline
+    info.insert(END, 'Load the baseline data: ' + filename + '\n')
+    info.update_idletasks()
+
+    # Show the baseline data
+    label_x = 'Position (mm)'
+    label_y = 'Current (A)'
+    title = 'Baseline: ' + filename
+    refreshFigure(temp_x0, temp_y0, label_x, label_y, title)
+
+def open_signal_file(cen_peak, space_peak, snr_height):
+    global label_x, label_y, title, filepath, options, data_ini_xy
+    label_y = 'Current (A)'
+    label_x = 'Position (mm)'
+
+    # Open multiple files
+    filez = tkFileDialog.askopenfilenames()
+
+    options = []
+    data_ini_xy = {}
+    for ii in range(0,len(filez)):
+        if ii == 0:
+            filepath = os.path.dirname(filez[0])
+
+        name = os.path.basename(filez[ii])
+        options.append(name)       # Collect the name
+
+        temp_x1, temp_y1, filename = MRI.load_file(filez[ii])
+        signal_x, signal_y = MRI.position_filter(temp_x1, temp_y1, temp_x0,
+                                                 temp_y0, cen_peak, space_peak)
+
+        # Change the unit
+        if snr_height != 0:
+            signal_y = signal_y/snr_height*100 # Change the unit to pT from nA
+            label_y = 'Magnetic field (pT)'
+
+        # Collect the data as the dictionary
+        temp_data = data(signal_x, signal_y, None)
+        data_ini_xy.update({name:temp_data})
+
+    # Refresh the options
+    refresh(options)
+
+    # Show the information of signal
+    info.insert(END, 'Load the signal data: ' + str(options) + '\n')
+    info.update_idletasks()
+
+
+# Define a function to refresh the options in the menu
+def refresh(options):
+    network_select['menu'].delete(0, 'end')
+
+    for choice in options:
+        network_select['menu'].add_command(label=choice, 
+                                           command=tkinter._setit(var, choice))
+        
+def correction_airPLS(signal_y, lambda_base, order, wep, p, itmermax):
+
+    global signal_y_airPLS
+
+    signal_y_airPLS, xb = MRI.airPLS(signal_y, lambda_base, order, wep, p, itmermax)
+
+    # Show the information by airPLS
+    info.insert(END, 'Show the result by airPLS \n')
+    info.update_idletasks()
+
+    # Show the baseline by airPLS
+    fig.plot(signal_x, xb, 'r-')   # fitted baseline by airPLS
+    canvas_frame.draw()
+
+def show_baseline_by_cut(cut_values, y):
+
+    global signal_y_cut, error, data_ini_xy
+
+    # yt is the fitted baseline
+    yt = MRI.bfvar_temp(cut_values, np.arange(y.size), y)
+    signal_y_cut = y-yt
+    data_ini_xy[temp_file_name].y_cut = signal_y_cut
+
+    ## Get the noise (for the error bar)
+    temp = np.arange(np.int(np.min(np.floor(cut_values))))
+
+    # Get the local value (1st)
+    index_max, index_min = MRI.error_bar_ana(temp, signal_y_cut)
+
+    # Get the local value (2nd)
+    index_max_2, index_min_2 = MRI.error_bar_ana(index_max, signal_y_cut)
+    index_max_3, index_min_3 = MRI.error_bar_ana(index_min, signal_y_cut)
+
+    # The final one
+    index_max = index_max_2
+    index_min = index_min_3
+
+    temp_all = np.union1d(index_min, index_max)
+
+    yt_max = np.interp(temp_all, index_max, signal_y_cut[index_max])
+    yt_min = np.interp(temp_all, index_min, signal_y_cut[index_min])
+
+#    # Plot the figure of error to check
+#    matplotlib.pylab.plot(temp,signal_y_cut[temp])
+#    matplotlib.pylab.plot(temp_all,yt_max)
+#    matplotlib.pylab.plot(temp_all,yt_min)
+
+    # Get the error
+    error_all = yt_max - yt_min
+    error = np.median(error_all)
+
+    # Format of error
+    if abs(error)<1e-2:
+        form_error = '%.2e'
+    else:
+        form_error = '%.2f'
+
+    # Show the information by the cut lines
+    info.insert(END, 'Show the result by the cut lines \n')
+    info.insert(END, 'The error is ' + str(form_error %error) + '\n')
+    info.update_idletasks()
+
+    # Show the baseline by the cut lines
+    fig.plot(np.arange(y.size), yt, 'r-')   # fitted baseline by the cut lines
+    canvas_frame.draw()
+
+def refreshFigure(x, y, label_x=None, label_y=None, title=None):
+    global curve_x, curve_y
+    
+    # Give the initial setting
+    if label_x is None:
+        label_x = 'x'
+    if label_y is None:
+        label_y = 'y'
+    if title is None:
+        title = 'Signal'
+
+    # For the exporting data
+    curve_x = x
+    curve_y = y
+
+    # Plot the figure
+    fig.clear()
+    fig.plot(x, y)
+    fig.set_xlabel(label_x)
+    fig.set_ylabel(label_y)
+    fig.set_title(title)
+    canvas_frame.draw()
+
+def showXY_handler(event):
+    # Show the x, y positions
+    info_xy.delete(1.0, END)
+
+    if event.xdata is not None and event.ydata is not None:
+
+        # Define the format of number
+        if abs(event.xdata) < 1e-2:
+            form_x = '%.2e'
+        else:
+            form_x = '%.2f'
+
+        if abs(event.ydata) < 1e-2:
+            form_y = '%.2e'
+        else:
+            form_y = '%.2f'
+
+        info_xy.insert(END, '(' + str(form_x % event.xdata) + ', ' + str(form_y % event.ydata) + ')', 'center')
+
+    info_xy.update_idletasks()
+
+def cut_lines(event):
+    global cut_values, index_cut_value, cen_peak
+
+    if var_cut.get() == 1: # To check the value of check_button
+       
+       # Give the cut_values (x data) and restricted to 2
+       if index_cut_value == 0:
+           
+          cut_values[0] = event.xdata
+          fig.axvline(x = cut_values[0], color = 'r')
+          index_cut_value = 1    # Make use of the setting of 
+                                 # index_cut_value (0 or 1) to collect two 
+                                 # values repeatly.
+          
+       else:
+           
+          cut_values[1] = event.xdata
+          fig.axvline(x = cut_values[1], color = 'r')
+          index_cut_value = 0
+           
+    if var_cen.get() == 1:
+       cen_peak = event.xdata
+       fig.axvline(x = cen_peak, color = 'r')
+         
+    canvas_frame.draw()
+
+    
+def show_ini_signal(data_ini_xy):
+    global signal_x, signal_y, temp_file_name, title
+
+    temp_file_name = var.get()
+    temp_xy = data_ini_xy[temp_file_name]
+    signal_x = temp_xy.x
+    signal_y = temp_xy.y
+
+    # Show the signal data
+    title = 'Signal: ' + temp_file_name
+    refreshFigure(signal_x, signal_y, label_x, label_y, title)
+
+       
+def export_data(x, y, filepath, temp_file_name):
+      
+    data_xy = np.array([x, y])
+    np.savetxt(filepath +'/' + temp_file_name + '_correct', data_xy.T) 
+    
+    # Show the information
+    info.insert(END, 'Corrected data is exported. \n')
+    info.update_idletasks()     
+
+def clear_text():
+    info.delete(1.0, END)
+    
+    # Show the information
+    info.insert(END, 'Information in the running: \n')
+    info.update_idletasks()  
+
+def fitting_curve():
+    
+    p0 = np.array([0, 1e4, 0, 9, cen_peak])
+    plsq = MRI.leastsq(MRI.residuals, p0, args=(signal_y_cut, signal_x))
+        
+    # Plot the fitting curve
+    yfit = MRI.B_field_fit(signal_x, plsq[0])    
+    
+    # Show the baseline by the cut lines
+    fig.plot(signal_x, yfit, 'r-')   # fitted curve
+    canvas_frame.show()
+
+    # Change the format
+    parameters = ['{:.2f}'.format(ii) for ii in plsq[0]]
+    
+    # Show the information
+    info.insert(END, '[angle_m, M, signal_base, d, d_x] are: ' 
+                     + str(parameters) + '\n')
+    info.update_idletasks()  
+#-----------------------------------------
+#-----------------------------------------
+
+# Parameters for the global parts
+filepath = '_correct'
+choices = 'None'
+temp_x0 = None
+temp_y0 = None
+signal_x = None
+signal_y = None
+curve_x = None
+curve_y = None
+label_x = None
+label_y = None
+title = None
+signal_y_airPLS = None
+signal_y_cut = None
+snr_height = 0
+error = 0
+yt = None # Fitted baseline by the cut lines
+
+cut_values = [0, 0]
+index_cut_value = 0
+
+returned_values = {}   # This is to get the path of file
+
+# The position we guess to be the peak
+cen_peak = 222
+space_peak = 40
+nn = 1000
+
+# The coefficient for the airPLS
+lambda_base = 1e5
+order = 1
+wep = 0.3
+p = 0.04
+itmermax = 200
+
+# Begin the GUI interface
+root = Tk()
+root.title('Data Analysis')
+
+# Initiate the menu and add to the root window
+menubar = Menu(root)
+root.config(menu=menubar)
+
+# Build the file menu
+file_menu = Menu(menubar, tearoff=False)
+file_menu.add_command(label='Load SNR', command=lambda: open_snr_file(nn))
+file_menu.add_command(label='Load baseline/ bare data', command=open_base_file)
+file_menu.add_command(label='Load signal after the base line', 
+                      command=lambda: open_signal_file(cen_peak, space_peak, snr_height))
+file_menu.add_command(label="Quit", command=root.destroy)
+
+# Add all submenus to main menu
+menubar.add_cascade(label="File", menu=file_menu)
+
+# Decide the frames
+left = Frame(root)
+right = Frame(root)
+right_top = Frame(right)
+right_down = Frame(right)
+
+left.grid(row=0, column=0)
+right.grid(row=0, column=1)
+right_top.grid(row=0, column=0)
+right_down.grid(row=1, column=0)
+
+# Plot the figure
+# The text widget to show the x, y positions
+info_xy = Text(left, height=1)  
+info_xy.tag_configure('center', justify='center')
+info_xy.pack()
+
+# The setting of figure
+mat_plot = Figure(figsize=(6, 4), dpi=100)
+fig = mat_plot.add_subplot(111)
+fig.set_xlabel('x')
+fig.set_ylabel('y')
+
+# Draw the figure by tk.DrawingArea
+canvas_frame = FigureCanvasTkAgg(mat_plot, master=left)
+canvas_frame.draw()
+canvas_frame.get_tk_widget().pack(side='top', fill='both', expand=1)
+canvas_frame._tkcanvas.pack(side='top', fill='both', expand=1)
+
+# Help to show the x, y positions
+canvas_frame.mpl_connect('motion_notify_event', showXY_handler)
+
+# Help to show the cut lines
+canvas_frame.mpl_connect('button_press_event', cut_lines)
+
+# Choose the central position
+# Give the central line
+var_cen = IntVar()   # boolean value: var_cut.get()
+check_cen = Checkbutton(right_top, text='Show central line', variable=var_cen)
+check_cen.pack()
+
+# Show the opened files
+var = StringVar(root)
+var.set(choices)
+
+# all submenus to main menu
+network_select = OptionMenu(right_top, var, choices)
+network_select.pack()
+
+# Show the choised initial signal file
+button_show_ini = Button(right_top, text='Show initial data', 
+                         command=lambda: show_ini_signal(data_ini_xy))
+button_show_ini.pack()
+
+# Baseline correction by airPLS (adaptive iteratively reweighted 
+# Penalized Least Squares) 
+button_show_airPLS = Button(right_top, text='Show by airPLS', 
+          command=lambda: correction_airPLS(signal_y, lambda_base, 
+                                              order, wep, p, itmermax))
+button_show_airPLS.pack()
+
+button_correct_airPLS = Button(right_top, text='Correct by airPLS',
+      command=lambda: refreshFigure(np.arange(signal_y_airPLS.size), 
+                                      signal_y_airPLS, 'Floating point', 
+                                      label_y, title))
+button_correct_airPLS.pack()
+
+# Baseline correction by the linear method
+# Give the cut line
+var_cut = IntVar()   # boolean value: var_cut.get()
+check_cut = Checkbutton(right_top, text = 'Show cut lines', variable=var_cut)
+check_cut.pack()
+
+# Show the fitted baseline by the cut line
+# The input here is the signal_y_airPLS
+button_cut_fit = Button(right_top, text='Show the fitted baseline',
+                        command=lambda: show_baseline_by_cut(cut_values, signal_y_airPLS))
+button_cut_fit.pack()
+
+button_correct_cut_fit = Button(right_top, text='Correct by cut lines',
+                                command=lambda: refreshFigure(signal_x, signal_y_cut, label_x,
+                                                             label_y, title))
+
+button_correct_cut_fit.pack()
+
+# Refresh from the correction by the cut lines
+button_refresh = Button(right_top, text='Refresh from the cut lines',
+                        command=lambda: refreshFigure(np.arange(signal_y_airPLS.size),
+                                                     signal_y_airPLS, 'Floating point',
+                                                     label_y, title))
+button_refresh.pack()
+
+# Export the file
+button_export = Button(right_top, text='Export data',
+                       command=lambda: export_data(curve_x, curve_y,
+                                                   filepath, temp_file_name))
+button_export.pack()
+
+# Fit the curve
+button_fit = Button(right_top, text='Fitting', command=fitting_curve)
+button_fit.pack()
+
+# Clear the data
+button_clear = Button(right_top, text='Clear',
+                      command=clear_text)
+button_clear.pack()
+
+
+# The text widget to show the information
+info = Text(right_down, width=50)
+info.insert(END, 'Information in the running: \n')
+info.pack()
+
+root.mainloop()
+
+# matplotlib.pyplot.plot(signal_x,signal_y)
+
